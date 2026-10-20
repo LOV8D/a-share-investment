@@ -1,0 +1,15 @@
+{$APP_SITE} {
+    encode zstd gzip
+    basic_auth {
+        {$APP_USER} {$APP_PASSWORD_HASH}
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+    reverse_proxy app:8765
+}
+

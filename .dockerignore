@@ -1,0 +1,13 @@
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+.DS_Store
+.git
+data
+runs
+tests
+scripts
+docs
+启动工作台.command
+

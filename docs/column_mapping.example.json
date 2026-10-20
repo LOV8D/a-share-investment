@@ -1,0 +1,13 @@
+{
+  "_note": "结构示例，必须按实际导出数据字典修改。以下源字段不是已核验的数据库字段名。",
+  "encoding": "utf-8-sig",
+  "columns": {
+    "date": "你的交易日期列",
+    "symbol": "你的证券代码列",
+    "amount": "你的成交额万元列"
+  },
+  "multipliers": {"amount": 10000},
+  "constants": {},
+  "symbol_exchange_column": "你的交易所列",
+  "exchange_mapping": {"上海": "SH", "深圳": "SZ"}
+}

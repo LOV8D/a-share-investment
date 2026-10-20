@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a-share-investment"
+version = "0.1.0"
+description = "Point-in-time CSI 300 quantitative and AI research workbench"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2,<3",
+    "pandas>=2.2,<3",
+    "scipy>=1.13,<2",
+    "scikit-learn>=1.5,<2",
+    "lightgbm>=4.5,<5",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "pyarrow>=17,<24",
+    "httpx>=0.27,<1",
+    "openpyxl>=3.1,<4",
+    "akshare==1.18.96",
+    "baostock==0.9.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+ashare = "ashare.cli:main"
+
+[tool.setuptools.package-data]
+ashare = ["static/*"]
+
+[tool.setuptools.packages.find]
+include = ["ashare*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

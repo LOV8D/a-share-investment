@@ -1,0 +1,58 @@
+name: a-share-investment
+
+x-app: &app
+  build: .
+  image: a-share-investment:latest
+  user: "${APP_UID:-1000}:${APP_GID:-1000}"
+  working_dir: /app
+  restart: unless-stopped
+  environment:
+    TZ: Asia/Shanghai
+    ASHARE_INTERNAL_SCHEDULER: "0"
+    APP_ALLOWED_HOSTS: "${APP_HOST},127.0.0.1,localhost,app"
+    AI_MODEL: "${AI_MODEL:-}"
+    AI_BASE_URL: "${AI_BASE_URL:-}"
+    AI_API_KEY: "${AI_API_KEY:-}"
+  volumes:
+    - ./data:/app/data
+    - ./runs:/app/runs
+    - ./config.json:/app/config.json
+
+services:
+  app:
+    <<: *app
+    command: ["python", "-m", "ashare", "serve", "--host", "0.0.0.0", "--port", "8765"]
+    expose:
+      - "8765"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://127.0.0.1:8765/api/health', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 45s
+
+  scheduler:
+    <<: *app
+    command: ["python", "-m", "ashare.scheduler"]
+    depends_on:
+      app:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_SITE: "${APP_SITE}"
+      APP_HOST: "${APP_HOST}"
+      APP_USER: "${APP_USER}"
+      APP_PASSWORD_HASH: "${APP_PASSWORD_HASH}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "${CADDYFILE:-./deploy/Caddyfile.ip}:/etc/caddy/Caddyfile:ro"
+      - ./caddy_data:/data
+      - ./caddy_config:/config
