@@ -35,6 +35,26 @@ def test_research_report_is_separate_from_latest_paper_report(tmp_path,monkeypat
     assert web.report()['kind']=='daily'
     assert web.research_report()['kind']=='research'
 
+
+def test_intelligence_shows_extracted_event_before_signal_eligibility(tmp_path,monkeypatch):
+    import ashare.web as web
+    from ashare.schema import SCHEMAS
+    monkeypatch.setattr(web,'ROOT',tmp_path)
+    folder=tmp_path/'data/live/current';folder.mkdir(parents=True)
+    document={key:'' for key in SCHEMAS['documents']}
+    document.update(document_id='doc-1',symbol='000001.SZ',source_type='filing',source_url='https://example.com/a',published_at='2026-10-20T20:00:00+08:00',first_seen_at='2026-10-21T00:01:00+08:00',title='公告',text='公告正文内容')
+    event={key:'' for key in SCHEMAS['events']}
+    event.update(event_id='event-1',document_id='doc-1',symbol='000001.SZ',category='earnings',sentiment=.5,materiality=.8,confidence=.9,novelty=.7,source_type='filing',source_url='https://example.com/a',published_at='2026-10-20T20:00:00+08:00',first_seen_at='2026-10-21T00:01:00+08:00',processed_at='2026-10-21T00:02:00+08:00',title='公告',evidence='公告正文内容',model='GLM-5.3-Flash',prompt_version='events-v1.1',text_sha256='a'*64)
+    pd.DataFrame([document]).to_csv(folder/'documents.csv',index=False)
+    pd.DataFrame([event]).to_csv(folder/'events.csv',index=False)
+    run=tmp_path/'runs/run-1';run.mkdir(parents=True)
+    (run/'report.json').write_text(json.dumps({'decision_cutoff':'2026-10-20T23:59:59+08:00'}))
+    (tmp_path/'runs/latest.json').write_text(json.dumps({'run_id':'run-1'}))
+    result=web.intelligence()
+    assert result['event_count']==1
+    assert result['events'][0]['signal_eligible'] is False
+    assert result['events'][0]['model']=='GLM-5.3-Flash'
+
 def test_cloud_blocks_memory_heavy_research_job(monkeypatch):
     monkeypatch.setenv('ASHARE_INTERNAL_SCHEDULER','0')
     response=client.post('/api/run',json={'kind':'research','mode':'real'})

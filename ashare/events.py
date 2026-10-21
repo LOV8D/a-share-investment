@@ -46,7 +46,7 @@ def extract_one(doc, provider="ollama", model=None, decision_cutoff=None):
     # Text intelligence is an optional overlay on the structured model.  A slow
     # or unavailable LLM must not hold the daily portfolio job for minutes per
     # document.
-    timeout=max(3.,min(float(os.getenv("AI_TIMEOUT_SECONDS","20")),180.))
+    timeout=max(3.,min(float(os.getenv("AI_TIMEOUT_SECONDS","45")),180.))
     if provider == "ollama":
         base=os.getenv("AI_BASE_URL","http://127.0.0.1:11434").rstrip("/")
         response=httpx.post(base+"/api/chat",json={"model":model,"messages":messages,"stream":False,"format":"json","options":{"temperature":0}},timeout=timeout)
@@ -109,7 +109,28 @@ def extract_documents(documents, output, provider="ollama", model=None, decision
     output.with_suffix(".errors.json").write_text(json.dumps(errors,ensure_ascii=False,indent=2))
     return {"extracted":len(rows),"skipped":len(documents)-len(rows)-extraction_error_count,"errors":errors}
 
-def extract_current_documents(folder, decision_cutoff=None, max_documents=12, time_budget_seconds=60):
+def _advance_forward_decision_time(folder):
+    """Freeze the live decision clock after text extraction finishes.
+
+    A midnight job can use documents fetched after the prior session's date
+    when they were available before the plan was produced. Historical replay
+    removes this field and therefore keeps the original exchange-date cutoff.
+    """
+    manifest_path=Path(folder)/"manifest.json"
+    if not manifest_path.exists():
+        return None
+    manifest=json.loads(manifest_path.read_text())
+    if manifest.get("mode") != "forward_paper":
+        return None
+    finished=pd.Timestamp.now(tz="Asia/Shanghai").isoformat()
+    manifest["decision_as_of"]=finished
+    temporary=manifest_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+    temporary.replace(manifest_path)
+    return finished
+
+
+def extract_current_documents(folder, decision_cutoff=None, max_documents=8, time_budget_seconds=150):
     """Extract a bounded newest-first batch for forward use only."""
     from .data import read_table
     folder=Path(folder)
@@ -122,15 +143,18 @@ def extract_current_documents(folder, decision_cutoff=None, max_documents=12, ti
     if len(existing):
         documents=documents[~documents.document_id.astype(str).isin(existing.document_id.astype(str))]
     if documents.empty:
+        _advance_forward_decision_time(folder)
         return {"extracted":0,"skipped":0,"errors":[]}
     priority={"filing":0,"policy":1,"news":2,"forum":3}
     documents["source_priority"]=documents.source_type.map(priority).fillna(4)
     documents=documents.sort_values(["first_seen_at","source_priority"],ascending=[False,True]).head(max_documents)
     provider=os.getenv("AI_PROVIDER") or ("compatible" if os.getenv("AI_API_KEY") else "ollama")
-    return extract_documents(
+    result=extract_documents(
         documents.drop(columns="source_priority"), folder/"events.parquet", provider,
         decision_cutoff=decision_cutoff, time_budget_seconds=time_budget_seconds,
     )
+    result["decision_as_of"]=_advance_forward_decision_time(folder)
+    return result
 
 def fetch_rss(url, symbol, source_type="news"):
     """Bounded single-feed ingestion. Caller selects feed and entity mapping."""

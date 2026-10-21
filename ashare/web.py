@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import ROOT,load_config,Config
 from .schema import SCHEMAS,DESCRIPTIONS,REQUIRED
-from .data import load_dataset,write_templates,cutoff
+from .data import load_dataset,write_templates,read_table,cutoff
 
 @asynccontextmanager
 async def lifespan(app):
@@ -117,6 +117,45 @@ def report(run_id:str|None=None):
     path=ROOT/"runs"/run_id/"report.json"
     if not path.is_file():raise HTTPException(404,"找不到运行结果")
     return json.loads(path.read_text())
+
+
+@app.get("/api/intelligence")
+def intelligence():
+    """Show the forward event ledger independently from signal eligibility.
+
+    A freshly processed event may be visible here before it becomes eligible
+    for a portfolio score. The eligibility flag makes that timing explicit.
+    """
+    folder=ROOT/"data/live/current"
+    documents=read_table(folder,"documents")
+    events=read_table(folder,"events")
+    cutoff_value=None
+    current=report()
+    if not current.get("empty") and current.get("decision_cutoff"):
+        cutoff_value=pd.Timestamp(current["decision_cutoff"])
+    if len(events):
+        events=events.copy()
+        events["usable_at"]=events[["published_at","first_seen_at","processed_at"]].max(axis=1)
+        events["signal_eligible"]=True if cutoff_value is None else events.usable_at.le(cutoff_value)
+        events=events.sort_values("usable_at",ascending=False).head(100)
+        records=json.loads(events.to_json(orient="records",date_format="iso",force_ascii=False))
+    else:
+        records=[]
+    error_path=folder/"events.errors.json"
+    try:
+        errors=json.loads(error_path.read_text()) if error_path.exists() else []
+    except (OSError,ValueError):
+        errors=[]
+    extracted_documents=int(events.document_id.astype(str).nunique()) if len(events) else 0
+    return {
+        "events":records,
+        "document_count":int(len(documents)),
+        "event_count":int(len(events)),
+        "pending_documents":max(0,int(len(documents))-extracted_documents),
+        "errors":errors[-20:],
+        "model":os.getenv("AI_MODEL") or None,
+        "decision_cutoff":current.get("decision_cutoff") if isinstance(current,dict) else None,
+    }
 
 @app.get("/api/research-report")
 def research_report():
