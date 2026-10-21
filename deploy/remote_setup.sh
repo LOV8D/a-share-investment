@@ -95,6 +95,21 @@ else
   fi
 fi
 
+# Keep authentication hashes outside Git.  Existing deployments are migrated
+# from their original single-user environment without changing that login.
+if [[ ! -f deploy/users.caddy ]]; then
+  umask 077
+  AUTH_USER="$(sed -n 's/^APP_USER=//p' .env | head -1)"
+  AUTH_HASH="$(sed -n 's/^APP_PASSWORD_HASH=//p' .env | head -1)"
+  AUTH_HASH="${AUTH_HASH#\'}"; AUTH_HASH="${AUTH_HASH%\'}"
+  cat > deploy/users.caddy <<EOF
+basic_auth {
+    $AUTH_USER $AUTH_HASH
+}
+EOF
+fi
+chmod 600 deploy/users.caddy
+
 docker_cmd compose build --pull
 docker_cmd compose up -d --remove-orphans
 docker_cmd compose ps

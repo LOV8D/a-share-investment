@@ -5,9 +5,7 @@
 {$APP_SITE} {
     tls internal
     encode zstd gzip
-    basic_auth {
-        {$APP_USER} {$APP_PASSWORD_HASH}
-    }
+    import /etc/caddy/users.caddy
     header {
         Strict-Transport-Security "max-age=31536000"
         X-Frame-Options "DENY"

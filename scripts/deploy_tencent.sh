@@ -33,6 +33,7 @@ fi
 rsync -az --delete \
   --exclude '.venv' --exclude '.pytest_cache' --exclude 'data' --exclude 'runs' \
   --exclude '.env' --exclude 'deployment-credentials.txt' \
+  --exclude 'deploy/users.caddy' \
   --exclude 'caddy_data' --exclude 'caddy_config' \
   --exclude '.DS_Store' --exclude '__pycache__' \
   -e "$RSYNC_SSH" ./ "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/"

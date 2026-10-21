@@ -5,6 +5,7 @@ __pycache__/
 .DS_Store
 .env
 deploy/cloud.env
+deploy/users.caddy
 *.pem
 *.key
 data/inbox/*

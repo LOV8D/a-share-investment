@@ -13,6 +13,8 @@ x-app: &app
     AI_MODEL: "${AI_MODEL:-}"
     AI_BASE_URL: "${AI_BASE_URL:-}"
     AI_API_KEY: "${AI_API_KEY:-}"
+    AI_PROVIDER: "${AI_PROVIDER:-}"
+    AI_TIMEOUT_SECONDS: "${AI_TIMEOUT_SECONDS:-45}"
   volumes:
     - ./data:/app/data
     - ./runs:/app/runs
@@ -47,12 +49,11 @@ services:
     environment:
       APP_SITE: "${APP_SITE}"
       APP_HOST: "${APP_HOST}"
-      APP_USER: "${APP_USER}"
-      APP_PASSWORD_HASH: "${APP_PASSWORD_HASH}"
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - "${CADDYFILE:-./deploy/Caddyfile.ip}:/etc/caddy/Caddyfile:ro"
+      - ./deploy/users.caddy:/etc/caddy/users.caddy:ro
       - ./caddy_data:/data
       - ./caddy_config:/config
