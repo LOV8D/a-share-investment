@@ -18,6 +18,35 @@ from .portfolio import backtest
 from .research import performance
 
 
+def _latest_incremental_base(output_root: Path, requested_start, requested_end, cfg: Config):
+    """Return the newest compatible replay that can be extended in place."""
+    candidates = []
+    for path in output_root.glob("replay-*/report.json"):
+        try:
+            report = json.loads(path.read_text())
+            end = pd.Timestamp(report["end"]).normalize()
+            same_rules = all(report.get("config", {}).get(key) == getattr(cfg, key) for key in (
+                "top_k", "hold_buffer", "max_weight", "max_sector_weight",
+                "cash_reserve", "max_daily_turnover", "max_daily_orders",
+                "min_trade_weight", "commission_rate", "min_commission",
+                "slippage_bps", "rebalance_frequency", "enable_text_alpha",
+                "text_alpha_weight", "worldquant_weight",
+            ))
+            if (report.get("kind") == "point_in_time_replay"
+                    and pd.Timestamp(report["start"]).normalize() == requested_start
+                    and end < requested_end
+                    and float(report.get("initial_cash", 0)) == float(cfg.initial_cash)
+                    and report.get("curve") and report.get("ending_positions") is not None
+                    and same_rules
+                    and (path.parent / "daily_plans.json").exists()
+                    and (path.parent / "executions.csv").exists()
+                    and (path.parent / "scores.parquet").exists()):
+                candidates.append((end, path.stat().st_mtime, path.parent, report))
+        except (KeyError, OSError, TypeError, ValueError):
+            continue
+    return max(candidates, default=None, key=lambda item: (item[0], item[1]))
+
+
 def _slice_dataset(folder: Path, start, end, feature_lookback_sessions: int = 320) -> Dataset:
     start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
     if start > end:
@@ -70,12 +99,37 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
     model has no trained text component, so replay never invents one retroactively.
     """
     requested_start, requested_end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
-    ds = _slice_dataset(Path(folder), requested_start, requested_end)
+    output_root = Path(output_root or ROOT / "runs")
+    incremental = _latest_incremental_base(output_root, requested_start, requested_end, cfg)
+    slice_start = incremental[0] if incremental else requested_start
+    ds = _slice_dataset(Path(folder), slice_start, requested_end)
     replay_cfg = cfg
     panel = build_panel(ds, replay_cfg)
-    scores = _production_scores(panel, requested_start, requested_end, replay_cfg)
-    actual_start, actual_end = scores.date.min(), scores.date.max()
-    curve, executions, holdings, cash, daily_plans = backtest(scores, ds, replay_cfg, include_plans=True)
+    scores = _production_scores(panel, slice_start, requested_end, replay_cfg)
+    actual_end = scores.date.max()
+    if incremental and actual_end > incremental[0]:
+        _, _, previous_dir, previous = incremental
+        extension_curve, extension_executions, holdings, cash, extension_plans = backtest(
+            scores, ds, replay_cfg, include_plans=True,
+            initial_holdings=previous["ending_positions"],
+            initial_cash=previous["ending_cash"],
+            state_date=incremental[0],
+            benchmark_scale=float(previous["curve"][-1]["benchmark"]),
+        )
+        curve = pd.concat([pd.DataFrame(previous["curve"]), extension_curve], ignore_index=True)
+        old_executions = pd.read_csv(previous_dir / "executions.csv")
+        executions = pd.concat([old_executions, extension_executions], ignore_index=True)
+        old_scores = pd.read_parquet(previous_dir / "scores.parquet")
+        scores = pd.concat([old_scores, scores[scores.date > incremental[0]]], ignore_index=True)
+        daily_plans = json.loads((previous_dir / "daily_plans.json").read_text()) + extension_plans
+        actual_start = pd.Timestamp(previous["start"])
+        incremental_from = str(incremental[0].date())
+        incremental_sessions = int(len(extension_curve))
+    else:
+        actual_start = scores.date.min()
+        curve, executions, holdings, cash, daily_plans = backtest(scores, ds, replay_cfg, include_plans=True)
+        incremental_from = None
+        incremental_sessions = 0
     metrics = performance(curve)
     metrics["benchmark_total_return"] = float(curve.benchmark.iloc[-1] - 1)
     filled = executions[executions.filled_shares > 0].copy() if len(executions) else executions
@@ -86,7 +140,7 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
         event_times = ds["events"].copy()
         event_times["usable_at"] = event_times[["published_at", "first_seen_at", "processed_at"]].max(axis=1)
     run_id = "replay-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    run_dir = Path(output_root or ROOT / "runs") / run_id
+    run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     curve.to_csv(run_dir / "equity_curve.csv", index=False)
     executions.to_csv(run_dir / "executions.csv", index=False)
@@ -123,6 +177,8 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
                        if text_active else "没有在历史信号时点前已处理的事件；禁止把今天生成的GLM结果回填到历史。"),
         },
         "point_in_time_policy": "strict",
+        "incremental_from": incremental_from,
+        "incremental_sessions": incremental_sessions,
         "lookahead_controls": {
             "price_and_membership": "每个信号日23:59:59时点校验 available_at/known_at",
             "fundamentals": "仅 as-of 合并 available_at 不晚于信号时点的财报",
@@ -167,6 +223,8 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
         "input_files_sha256": dataset_hash(folder),
         "requested_period": [str(requested_start.date()), str(requested_end.date())],
         "actual_period": [str(actual_start.date()), str(actual_end.date())],
+        "incremental_from": incremental_from,
+        "incremental_sessions": incremental_sessions,
         "text_weight_used": text_weight_used,
     })
     summary = (

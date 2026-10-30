@@ -215,8 +215,19 @@ def execute_plan(plan, market, holdings, cash, cfg, fees, sellable=None, action_
         turnover_remaining -= notional
     return holdings, cash, logs
 
-def backtest(scores, ds, cfg, score_column="score", include_plans=False):
-    holdings, cash, pending = {}, cfg.initial_cash, None
+def backtest(scores, ds, cfg, score_column="score", include_plans=False,
+             initial_holdings=None, initial_cash=None, state_date=None,
+             benchmark_scale=1.0):
+    """Run the next-open simulator, optionally resuming from a prior close.
+
+    ``state_date`` means ``initial_holdings`` and ``initial_cash`` already
+    represent that session's closing state.  The simulator therefore uses the
+    score on that date to create the next-open plan without applying corporate
+    actions or recording the same close twice.
+    """
+    holdings = dict(initial_holdings or {})
+    cash = cfg.initial_cash if initial_cash is None else float(initial_cash)
+    pending = None
     curve, executions, plans = [], [], []
     sessions = sorted(ds["prices"].date.unique())
     by_score = {d: g for d,g in scores.groupby("date")}
@@ -228,12 +239,26 @@ def backtest(scores, ds, cfg, score_column="score", include_plans=False):
     benchmark = ds["benchmark"].set_index("date")
     start = pd.Timestamp(scores.date.min())
     base_bench = float(benchmark.loc[start,"total_return_close"])
+    state_date = pd.Timestamp(state_date).normalize() if state_date is not None else None
     previous_nav = cfg.initial_cash
     for i, day in enumerate(sessions):
         day = pd.Timestamp(day)
         if day < start:
             continue
         p = by_price[day]
+        if state_date is not None and day == state_date:
+            marks = p.set_index("symbol")
+            if set(holdings)-set(marks.index):
+                raise ValueError("增量回放起点持仓缺少收盘行情")
+            previous_nav = cash+sum(q*float(marks.loc[s,"close"]) for s,q in holdings.items())
+            if day in by_score and i+1 < len(sessions) and should_rebalance(day, sessions[i+1], cfg):
+                scored = by_score[day].copy()
+                if score_column != "score":
+                    scored["score"] = scored[score_column].rank(pct=True)*100
+                    scored["rank"] = scored.score.rank(ascending=False,method="first").astype(int)
+                pending = make_plan(scored,holdings,cash,p,pd.Timestamp(sessions[i+1]),cfg,ds["fees"])
+                plans.append(pending)
+            continue
         actions = ds["actions"]
         actions = actions[actions.date == day] if len(actions) else actions
         for a in actions.itertuples():
@@ -251,7 +276,7 @@ def backtest(scores, ds, cfg, score_column="score", include_plans=False):
         if set(holdings)-set(marks.index):
             raise ValueError("回测持仓丢失行情；请补齐退出成分/退市证券后续数据")
         nav = cash+sum(q*float(marks.loc[s,"close"]) for s,q in holdings.items())
-        curve.append({"date": str(day.date()), "nav": nav, "equity": nav/cfg.initial_cash, "benchmark": float(benchmark.loc[day,"total_return_close"])/base_bench, "cash": cash, "exposure": 1-cash/nav, "turnover": turnover, "fees": costs, "positions": len(holdings)})
+        curve.append({"date": str(day.date()), "nav": nav, "equity": nav/cfg.initial_cash, "benchmark": benchmark_scale*float(benchmark.loc[day,"total_return_close"])/base_bench, "cash": cash, "exposure": 1-cash/nav, "turnover": turnover, "fees": costs, "positions": len(holdings)})
         previous_nav = nav
         pending = None
         if day in by_score and i+1 < len(sessions) and should_rebalance(day, sessions[i+1], cfg):
