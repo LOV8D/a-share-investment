@@ -15,14 +15,21 @@ if curl --fail --silent http://127.0.0.1:8765/api/health > /dev/null; then
   open http://127.0.0.1:8765
   exit 0
 fi
-.venv/bin/python -m ashare serve --port 8765 &
-ashare_server_pid=$!
-trap 'kill "$ashare_server_pid" 2>/dev/null || true' EXIT INT TERM
+.venv/bin/python - <<'PYTHON'
+from pathlib import Path
+import subprocess
+root=Path.cwd();(root/'runs').mkdir(exist_ok=True)
+with (root/'runs/local-service.stdout.log').open('a') as out,(root/'runs/local-service.stderr.log').open('a') as err:
+    server=subprocess.Popen(['/bin/zsh',str(root/'scripts/run_local_service.sh')],cwd=root,stdin=subprocess.DEVNULL,stdout=out,stderr=err,start_new_session=True)
+(root/'runs/local-service.pid').write_text(str(server.pid)+'\n')
+PYTHON
 for ashare_attempt in {1..30}; do
   if curl --fail --silent http://127.0.0.1:8765/api/health > /dev/null; then
     open http://127.0.0.1:8765
-    break
+    print "工作台已在后台运行，可以关闭此终端窗口。每日自动运行由网页中的开关控制。"
+    exit 0
   fi
   sleep 0.5
 done
-wait "$ashare_server_pid"
+print "服务暂未启动，请查看 runs/local-service.stderr.log。"
+exit 1
