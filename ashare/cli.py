@@ -17,7 +17,7 @@ def main():
     serve=sub.add_parser("serve");serve.add_argument("--host",default="127.0.0.1");serve.add_argument("--port",type=int,default=8765)
     imp=sub.add_parser("import");imp.add_argument("--source",required=True);imp.add_argument("--table",required=True);imp.add_argument("--mapping",required=True);imp.add_argument("--dest",default=str(ROOT/"data/inbox"))
     ext=sub.add_parser("extract");ext.add_argument("--data",default=str(ROOT/"data/inbox"));ext.add_argument("--provider",choices=["ollama","compatible"],default="ollama");ext.add_argument("--model");ext.add_argument("--as-of")
-    replay=sub.add_parser("replay");replay.add_argument("--data",default=str(ROOT/"data/live/current"));replay.add_argument("--start",required=True);replay.add_argument("--end",required=True);replay.add_argument("--capital",type=float)
+    replay=sub.add_parser("replay");replay.add_argument("--data",default=str(ROOT/"data/live/current"));replay.add_argument("--start",required=True);replay.add_argument("--end",required=True);replay.add_argument("--capital",type=float);replay.add_argument("--reconstruction");replay.add_argument("--no-incremental",action="store_true")
     feed=sub.add_parser("fetch-rss");feed.add_argument("--url",required=True);feed.add_argument("--symbol",required=True);feed.add_argument("--output",required=True);feed.add_argument("--source-type",default="news",choices=["news","policy","filing","forum"])
     pre=sub.add_parser("precheck");pre.add_argument("--run",required=True);pre.add_argument("--data",default=str(ROOT/"data/inbox"))
     miner=sub.add_parser("mine");miner.add_argument("--data",default=str(ROOT/"data/inbox"));miner.add_argument("--proposals");miner.add_argument("--budget",type=int,default=32);miner.add_argument("--output",default=str(ROOT/"runs/factor-experiments.json"))
@@ -76,7 +76,7 @@ def main():
     if args.command=="replay":
         from .replay import run_replay
         if args.capital is not None:cfg=load_config(args.config,{"initial_cash":args.capital})
-        result=run_replay(args.data,cfg,args.start,args.end)
+        result=run_replay(args.data,cfg,args.start,args.end,reconstruction=args.reconstruction,incremental=not args.no_incremental)
         print(ROOT/"runs"/result["run_id"]);return
     if args.command=="templates":
         write_templates(ROOT/"data/templates");print(ROOT/"data/templates");return

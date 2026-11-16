@@ -11,10 +11,10 @@ import pandas as pd
 
 from .config import ROOT, Config
 from .data import Dataset, cutoff, dataset_hash, load_daily_dataset, read_table, validate
-from .features import build_panel
-from .models import production_scores
+from .features import build_cached_panel
+from .models import production_scores, xgboost_walk_scores
 from .pipeline import write_json
-from .portfolio import backtest
+from .portfolio import backtest, make_plan
 from .research import performance
 
 
@@ -91,7 +91,7 @@ def _production_scores(panel: pd.DataFrame, start, end, cfg: Config) -> pd.DataF
     return production_scores(scores, cfg).sort_values(["date", "rank"])
 
 
-def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
+def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction=None, incremental=True) -> dict:
     """Replay the transparent production score and next-open execution rules.
 
     LLM/text alpha is deliberately zero unless historical events already carry
@@ -100,12 +100,23 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
     """
     requested_start, requested_end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
     output_root = Path(output_root or ROOT / "runs")
-    incremental = _latest_incremental_base(output_root, requested_start, requested_end, cfg)
+    incremental = _latest_incremental_base(output_root, requested_start, requested_end, cfg) if incremental and reconstruction is None and cfg.structured_model=="prior" else None
     slice_start = incremental[0] if incremental else requested_start
-    ds = _slice_dataset(Path(folder), slice_start, requested_end)
+    ds = _slice_dataset(Path(folder), slice_start, requested_end,feature_lookback_sessions=1100 if cfg.structured_model=="xgboost" else 320)
     replay_cfg = cfg
-    panel = build_panel(ds, replay_cfg)
-    scores = _production_scores(panel, slice_start, requested_end, replay_cfg)
+    panel = build_cached_panel(ds, replay_cfg)
+    reconstruction_meta={}
+    if reconstruction:
+        recon=Path(reconstruction)
+        signals=pd.read_parquet(recon/"daily_signals.parquet")
+        if signals.duplicated(["date","symbol"]).any():raise ValueError("重建事件信号主键重复")
+        panel=panel.merge(signals[["date","symbol","reconstructed_text_score"]],on=["date","symbol"],how="left")
+        reconstruction_meta=json.loads((recon/"signals_manifest.json").read_text())
+    folds=[]
+    if cfg.structured_model=="xgboost":
+        scores,folds=xgboost_walk_scores(panel,replay_cfg,slice_start,requested_end,output_root/"xgb-models")
+    else:
+        scores = _production_scores(panel, slice_start, requested_end, replay_cfg)
     actual_end = scores.date.max()
     if incremental and actual_end > incremental[0]:
         _, _, previous_dir, previous = incremental
@@ -154,7 +165,7 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
     report = {
         "run_id": run_id,
         "kind": "point_in_time_replay",
-        "mode": "forward_rules_historical_replay",
+        "mode": "retrospective_event_reconstruction" if reconstruction else "forward_rules_historical_replay",
         "requested_start": str(requested_start.date()),
         "requested_end": str(requested_end.date()),
         "start": str(actual_start.date()),
@@ -176,7 +187,9 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
             "reason": ("仅使用在各信号时点前已发布、已发现且已处理的事件。"
                        if text_active else "没有在历史信号时点前已处理的事件；禁止把今天生成的GLM结果回填到历史。"),
         },
-        "point_in_time_policy": "strict",
+        "point_in_time_policy": "retrospective_publication_filter" if reconstruction else "strict",
+        "reconstruction": reconstruction_meta,
+        "events": pd.read_parquet(Path(reconstruction)/"events.parquet").tail(100).to_dict("records") if reconstruction else [],
         "incremental_from": incremental_from,
         "incremental_sessions": incremental_sessions,
         "lookahead_controls": {
@@ -193,25 +206,72 @@ def run_replay(folder, cfg: Config, start, end, output_root=None) -> dict:
             "reason": "缺少论文要求的sector/industry/subindustry分层历史分类，未做静默替代。",
         },
         "model_card": {
-            "algorithm": "核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%",
+            "algorithm": "XGBoost学习23个核心因子与83个WorldQuant因子" if cfg.structured_model=="xgboost" else "核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%",
             "challengers": "本次短区间回放不使用ML挑战者决定订单",
             "features": 83 + 23,
             "text_features": 5,
             "text_active": text_active,
             "text_weight_used": text_weight_used,
-            "train_end": "固定透明规则，不在回放区间拟合权重",
-            "train_rows": 0,
+            "explanation":"XGBoost结构化排序70%与GLM事件评分30%融合；历史重建保留真实抓取处理时间。",
+            "train_end": folds[-1]["train_end"] if folds else "固定透明规则，不在回放区间拟合权重",
+            "train_rows": folds[-1]["rows"] if folds else 0,
             "horizon": replay_cfg.label_horizon,
             "refit_every": replay_cfg.refit_every,
         },
         "factors": [],
         "candidates": [],
-        "folds": [],
-        "ablation": [{"name": "日度前十生产组合", **metrics}],
+        "folds": folds,
+        "ablation": [{"name": ("XGBoost + GLM历史重建" if reconstruction else "日度前十生产组合"), **metrics}],
         "config": replay_cfg.dict(),
         "input_collection_id": ds.manifest.get("collection_id"),
         "curve": curve.to_dict("records"),
     }
+    if reconstruction:
+        source_events=pd.read_parquet(Path(reconstruction)/"events.parquet")
+        report["events"]=source_events.sort_values("published_at",ascending=False).head(300).to_dict("records")
+        report["text"]["reason"]=reconstruction_meta.get("warning")
+        report["text"]["events_usable_by_end"]=len(source_events)
+        report["lookahead_controls"]["events"]="仅按历史发布时间筛选；真实首次抓取和处理时间保留，属于事后重建"
+        report["text"]["future_events_excluded"]=None
+        report["text"]["reconstructed"]=True
+        report["warnings"]=[reconstruction_meta.get("warning"),"历史新闻/论坛覆盖不完整；无事件股票使用中性50分，此为建模约定。"]
+        report["text"]["informative_coverage"]=float(scores.text_score.sub(.5).abs().gt(1e-9).mean())
+        report["text"]["stock_days"]=len(scores)
+        report["text"]["configured_weight"]=cfg.text_alpha_weight
+        report["text"]["daily_weight_used"]=[{"date":str(day.date()),"weight":cfg.text_alpha_weight if frame.text_model_active.all() else None,"informative_stocks":int(frame.text_score.sub(.5).abs().gt(1e-9).sum())} for day,frame in scores.groupby("date")]
+        for baseline_path in sorted(output_root.glob("replay-*/report.json"),reverse=True):
+            try:
+                baseline=json.loads(baseline_path.read_text())
+                if (baseline.get("start")==report["start"] and baseline.get("end")==report["end"] and baseline.get("config",{}).get("structured_model")=="xgboost" and baseline.get("text",{}).get("weight_used")==0 and len(baseline.get("ablation",[]))>=3):
+                    report["ablation"]=baseline["ablation"]+report["ablation"]
+                    break
+            except (OSError,ValueError):pass
+
+    if reconstruction:
+        # A hypothetical replay account gets its own next-open plan; the
+        # actual forward-paper account and latest pointer are not mutated.
+        calendar=read_table(folder,"calendar")
+        future=calendar.loc[calendar.date>actual_end,"date"]
+        if len(future):
+            next_day=future.min()
+            latest_scores=scores[scores.date==actual_end].sort_values("rank").copy()
+            market=ds["prices"][ds["prices"].date==actual_end].copy()
+            trailing=ds["prices"].sort_values(["symbol","date"]).groupby("symbol").amount.apply(lambda x:x.tail(20).mean())
+            market["adv20"]=market.symbol.map(trailing)
+            plan=make_plan(latest_scores,holdings,cash,market,next_day,cfg,ds["fees"])
+            plan.update(account_mode="历史事件重建的假设模拟账户",rebalance_due=True,rebalance_frequency="daily",retrospective=True)
+            report["plan"]=plan;report["next_session"]=str(next_day.date())
+            report["decision_cutoff"]=str(cutoff(actual_end,cfg.decision_time))
+            keep=[c for c in latest_scores if not c.startswith("x_")]
+            ranked=latest_scores[keep].to_dict("records")
+            for row in ranked:
+                row["target_weight"]=plan["target_weights"].get(row["symbol"],0.)
+                row["explanations"]=[]
+                row["minimum_order_value"]=float(row["close"])*float(row.get("min_order",100))
+            report["rankings"]=ranked
+            write_json(run_dir/"plan.json",plan)
+            pd.DataFrame(plan["orders"]).to_csv(run_dir/"orders.csv",index=False)
+    report["data_audit"]={"quarantined_symbols":len({q["symbol"] for q in ds.manifest.get("corporate_action_quarantine",[])}),"repair_source":ds.manifest.get("repair_source")}
     write_json(run_dir / "report.json", report)
     write_json(run_dir / "config.json", replay_cfg.dict())
     write_json(run_dir / "manifest.json", {

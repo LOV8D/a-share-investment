@@ -23,3 +23,5 @@ caddy_data/
 caddy_config/
 deployment-credentials.txt
 查看云端登录信息.command
+
+data/reconstruction/

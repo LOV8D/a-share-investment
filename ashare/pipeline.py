@@ -9,14 +9,14 @@ import numpy as np
 import pandas as pd
 from .config import ROOT
 from .data import Dataset,load_dataset,load_daily_dataset,dataset_hash,cutoff
-from .features import build_panel
-from .models import walk_forward,explanations,fit_model,training_slice,predict
+from .features import build_cached_panel as build_panel
+from .models import walk_forward,explanations,fit_model,training_slice,predict,training_anchor
 from .portfolio import make_plan,backtest,should_rebalance
 from .research import performance,factor_report,factor_candidates
 
 def clean(value):
     if isinstance(value,dict):return {str(k):clean(v) for k,v in value.items()}
-    if isinstance(value,(tuple,list)):return [clean(v) for v in value]
+    if isinstance(value,(tuple,list,np.ndarray)):return [clean(v) for v in value]
     if isinstance(value,(np.integer,)):return int(value)
     if isinstance(value,(np.bool_,)):return bool(value)
     if isinstance(value,(float,np.floating)):return float(value) if np.isfinite(value) else None
@@ -42,7 +42,7 @@ def freeze_research_dataset(ds):
 def run_engine(folder,cfg,kind="research",output_root=None,progress=None):
     progress=progress or (lambda *args:None)
     progress("校验数据与可用时间",.03)
-    ds=load_dataset(folder) if kind=="research" else load_daily_dataset(folder,cfg.train_window_days+100)
+    ds=load_dataset(folder) if kind=="research" else load_daily_dataset(folder,cfg.train_window_days+400)
     if kind=="research":
         ds=freeze_research_dataset(ds)
     progress("构建量价与基本面因子",.10)
@@ -81,7 +81,8 @@ def run_engine(folder,cfg,kind="research",output_root=None,progress=None):
             ablation.append({"name":name,**m})
     else:
         progress("使用截至今天已成熟的历史标签训练",.40)
-        model=fit_model(training_slice(panel,latest_date,cfg),latest_date,cfg)
+        anchor=training_anchor(panel,latest_date,cfg) if cfg.structured_model=="xgboost" else latest_date
+        model=fit_model(training_slice(panel,anchor,cfg),anchor,cfg)
         latest=predict(model,panel[panel.date==latest_date],cfg)
     progress("生成账户约束下的次日计划",.90)
     holdings={};cash=cfg.initial_cash;account_mode="全现金模拟账户"
@@ -142,7 +143,7 @@ def run_engine(folder,cfg,kind="research",output_root=None,progress=None):
     if backtest_audit.get("terminal_suspended_positions"):
         warnings.append("回测末日仍持有停牌/退市证券，缺少换股映射；该次回测不能通过公司行动审计。")
     report_mode="synthetic" if synthetic else ("forward_paper" if ds.manifest.get("mode")=="forward_paper" else "real_research")
-    report={"run_id":run_id,"kind":kind,"mode":report_mode,"as_of":str(latest_date.date()),"decision_cutoff":str(decision_cutoff),"next_session":str(next_date.date()),"historical_research_cutoff":ds.manifest.get("historical_research_cutoff"),"config":cfg.dict(),"metrics":metrics|ic_summary,"curve":curves,"rankings":ranked,"plan":plan,"factors":factor_rows,"candidates":factor_candidates(panel,cfg),"events":events.to_dict("records"),"folds":folds,"ablation":ablation,"backtest_audit":backtest_audit,"quality":ds.quality,"warnings":warnings,"worldquant101":{"usable":83,"unavailable":18,"unavailable_ids":[48,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100]},"model_card":{"algorithm":"核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%","challengers":"LightGBM LambdaRank + Ridge（仅观察，不参与订单）","features":len(model.columns),"text_features":len(model.text_columns),"text_active":text_active,"text_weight_used":cfg.text_alpha_weight if text_active else 0.,"train_end":model.trained_through,"train_rows":model.rows,"horizon":cfg.label_horizon,"refit_every":cfg.refit_every,"explanation":"GLM只抽取当时可见事件；结构化分数80%与事件分数20%做后融合。无合格事件时结构化分数权重为100%。TreeSHAP只解释LightGBM挑战者。","validation":"每日收盘评分、下一交易日开盘调仓；成熟标签、时间隔离与滚动样本外挑战者预测","live_ready":False}}
+    report={"run_id":run_id,"kind":kind,"mode":report_mode,"as_of":str(latest_date.date()),"decision_cutoff":str(decision_cutoff),"next_session":str(next_date.date()),"historical_research_cutoff":ds.manifest.get("historical_research_cutoff"),"config":cfg.dict(),"metrics":metrics|ic_summary,"curve":curves,"rankings":ranked,"plan":plan,"factors":factor_rows,"candidates":factor_candidates(panel,cfg),"events":events.to_dict("records"),"folds":folds,"ablation":ablation,"backtest_audit":backtest_audit,"quality":ds.quality,"warnings":warnings,"worldquant101":{"usable":83,"unavailable":18,"unavailable_ids":[48,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100]},"model_card":{"algorithm":"XGBoost（23核心因子 + 83 WorldQuant因子）" if cfg.structured_model=="xgboost" else "核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%","challengers":"LightGBM LambdaRank + Ridge（仅观察，不参与订单）","features":106 if model.xgb is not None else len(model.columns),"text_features":len(model.text_columns),"text_active":text_active,"text_weight_used":cfg.text_alpha_weight if text_active else 0.,"train_end":model.trained_through,"train_rows":model.rows,"horizon":cfg.label_horizon,"refit_every":cfg.refit_every,"explanation":f"GLM只抽取当时可见事件；结构化分数{1-cfg.text_alpha_weight:.0%}与事件分数{cfg.text_alpha_weight:.0%}做后融合。无合格事件时结构化分数权重为100%。TreeSHAP解释当前使用的树模型。","validation":"每日收盘评分、下一交易日开盘调仓；成熟标签、时间隔离与滚动样本外挑战者预测","live_ready":False}}
     report=clean(report)
     write_json(run_dir/"report.json",report)
     write_json(run_dir/"plan.json",plan)
@@ -151,7 +152,9 @@ def run_engine(folder,cfg,kind="research",output_root=None,progress=None):
     pd.DataFrame(plan["orders"],columns=order_columns).to_csv(run_dir/"orders.csv",index=False)
     latest[latest_columns].to_csv(run_dir/"rankings.csv",index=False)
     write_json(run_dir/"manifest.json",{"run_id":run_id,"created_at":datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),"dataset":str(Path(folder).resolve()),"data_hashes":dataset_hash(folder),"python":platform.python_version(),"dependencies":{p:importlib.metadata.version(p) for p in ["numpy","pandas","scikit-learn","lightgbm"]},"data_manifest":ds.manifest,"model_train_end":model.trained_through})
+    if model.xgb is not None:model.xgb.save_model(str(run_dir/"xgboost.json"))
     model.ranker.booster_.save_model(str(run_dir/"ranker.txt"))
+    if model.xgb is not None:model.xgb.save_model(run_dir/"xgboost.json")
     if model.text_model is not None:model.text_model.booster_.save_model(str(run_dir/"text_ranker.txt"))
     write_json(run_dir/"ridge.json",{"columns":model.columns,"coefficients":model.ridge.coef_.tolist(),"intercept":float(model.ridge.intercept_)})
     # Atomic pointer update; failed runs never replace the latest good report.

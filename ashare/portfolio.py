@@ -69,7 +69,15 @@ def make_plan(scored, holdings, cash, market, next_date, cfg, fees):
     viable = eligible[~eligible.symbol.isin(blocked)]
     # Selection is the exact eligible top K.  The order cap below may delay a
     # replacement, but it never substitutes rank K+1 for a deferred top-K name.
-    selected = viable[~viable.symbol.isin(locked)].head(max(0,cfg.top_k-len(locked)))
+    selectable = viable[~viable.symbol.isin(locked)]
+    slots=max(0,cfg.top_k-len(locked))
+    if cfg.hold_buffer:
+        # Daily scoring continues; retain eligible holdings inside the buffer
+        # before filling vacancies. Ineligible holdings always exit.
+        retained=selectable[selectable.symbol.isin(holdings) & selectable["rank"].le(cfg.top_k+cfg.hold_buffer)].head(slots)
+        selected=pd.concat([retained,selectable[~selectable.symbol.isin(retained.symbol)].head(slots-len(retained))])
+    else:
+        selected=selectable.head(slots)
     weights = allocate_weights(selected, cfg, locked_weight, locked_sector_weights)
     ranks = dict(zip(ranked.symbol, ranked["rank"]))
     adv = dict(zip(scored.symbol, scored.adv20))

@@ -30,7 +30,8 @@ class Config:
     paper_replay_start: str = "2026-09-15"
     event_half_life_days: float = 3.
     enable_text_alpha: bool = True
-    text_alpha_weight: float = .20
+    text_alpha_weight: float = .30
+    structured_model: str = "prior"
     worldquant_weight: float = .50
     min_text_coverage: float = .05
     min_liquidity: float = 20_000_000
@@ -67,6 +68,8 @@ class Config:
             raise ValueError("持股数、每日订单上限、重训间隔和缓冲名次必须为合法整数")
         if not 0<=self.min_text_coverage<=1 or self.min_liquidity<0 or self.min_listed_days<0:
             raise ValueError("数据覆盖率/筛选阈值不合法")
+        if self.structured_model not in {"prior", "xgboost"}:
+            raise ValueError("structured_model 必须为 prior 或 xgboost")
         if self.rebalance_frequency not in {"daily", "weekly"}:
             raise ValueError("调仓频率只支持 daily 或 weekly")
         if not (.95 <= self.live_price_coverage_min <= 1):

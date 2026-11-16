@@ -146,9 +146,34 @@ def intelligence():
         errors=json.loads(error_path.read_text()) if error_path.exists() else []
     except (OSError,ValueError):
         errors=[]
+    reconstruction={}
+    statuses=sorted((ROOT/"data/reconstruction").glob("*/status.json"),reverse=True)
+    if statuses:
+        try:
+            status_path=statuses[0];reconstruction=json.loads(status_path.read_text())
+            for name in ("coverage","news_coverage","repairs_manifest"):
+                path=status_path.parent/(name+".json")
+                if path.exists():reconstruction[name]=json.loads(path.read_text())
+        except (OSError,ValueError):pass
+    historical_events=[]
+    if reconstruction.get("run_id"):
+        run_id=str(reconstruction["run_id"])
+        path=ROOT/"runs"/run_id/"report.json"
+        if Path(run_id).name==run_id and path.exists():
+            try:
+                historical=json.loads(path.read_text())
+                historical_events=historical.get("events",[])
+                for event in historical_events:
+                    event["event_id"]=event.get("event_id") or event.get("document_id")
+                    event["signal_eligible"]=False
+            except (OSError,ValueError):pass
     extracted_documents=int(events.document_id.astype(str).nunique()) if len(events) else 0
     return {
         "events":records,
+        "reconstruction":reconstruction,
+        "historical_events":historical_events,
+        "historical_events":historical_events,
+        "historical_events":historical_events,
         "document_count":int(len(documents)),
         "event_count":int(len(events)),
         "pending_documents":max(0,int(len(documents))-extracted_documents),
@@ -374,6 +399,7 @@ def scheduler_loop(stop):
             if last==today:
                 outcome=schedule.get("last_result")
                 if outcome=="success":state["schedule_message"]=f"今日自动运行成功（信号日 {schedule.get('last_success_signal','—')}）"
+                elif outcome=="replay_updated":state["schedule_message"]=f"今日已手动续算模拟盘至 {schedule.get('last_replay_signal','—')}；每日计划可手动生成"
                 elif outcome=="failed":state["schedule_message"]="今日自动运行失败；不会自动重试，可检查原因后手动生成计划"
                 elif outcome=="started" and state["running"]:state["schedule_message"]="今日自动任务正在运行"
                 elif outcome=="started":state["schedule_message"]="今日自动任务曾启动但未完成；不会自动重试，可手动生成计划"

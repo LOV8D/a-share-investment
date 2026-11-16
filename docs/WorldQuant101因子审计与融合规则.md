@@ -53,7 +53,7 @@ GLM 不预测股价，也不直接选择股票。它只从公告、政策、新�
 只有某只股票存在合格事件时才做后融合：
 
 ```text
-FinalScore = 80% × StructuredScore + 20% × GLMEventRank
+FinalScore = 70% × StructuredScore + 30% × GLMEventRank
 ```
 
 没有合格事件时：
@@ -62,7 +62,7 @@ FinalScore = 80% × StructuredScore + 20% × GLMEventRank
 FinalScore = StructuredScore
 ```
 
-因此 20% 是上限，不是每天强制使用的权重。没有新闻的股票不会因为缺文本而被自动扣成零分。
+因此 30% 是上限，不是每天强制使用的权重。没有新闻的股票不会因为缺文本而被自动扣成零分。
 
 ## 禁止未来信息
 
@@ -85,3 +85,8 @@ max(published_at, first_seen_at, processed_at)
 - 10 万元账户可能因为百股一手、行业上限或高价股而实际持有少于 10 只；产品同时展示理论前十和可实现持仓，不能伪造碎股成交。
 
 论文来源：[101 Formulaic Alphas](https://arxiv.org/abs/1601.00991)
+
+
+## 2026-11-16：XGBoost升级
+
+当前结构化模型改为XGBoost滚动排序，输入23个核心因子与83个独立WorldQuant因子，不再对两组固定各分配50%。只使用成熟历史标签训练。融合前的分数为：70% × XGBoost横截面排名分 + 30% × 有证据的GLM事件分；之后再转换为最终展示排名。历史重建无事件股票用中性50分，这是建模约定，不能等同于已证实没有事件；真实前向无合格事件时继续按结构化分数生成计划，并如实显示实际文本权重。

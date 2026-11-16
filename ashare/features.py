@@ -106,7 +106,7 @@ def build_panel(ds, cfg):
         f.loc[~valid_label, "forward_return"] = np.nan
         frames.append(f)
     panel = pd.concat(frames, ignore_index=True)
-    wq, wq_audit = compute_worldquant_composite(panel)
+    wq, wq_audit = compute_worldquant_composite(panel,keep_factors=cfg.structured_model=="xgboost")
     panel = panel.merge(wq, on=["date", "symbol"], how="left")
     panel = panel.merge(ds["universe"], on=["date", "symbol"], how="inner")
     late = (panel.known_at > panel.cutoff) | (panel.available_at > panel.cutoff)
@@ -132,4 +132,21 @@ def build_panel(ds, cfg):
     panel["relevance"] = panel.groupby("date").forward_return.rank(pct=True).mul(4.999).fillna(0).astype(int)
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     panel.attrs["worldquant_audit"] = wq_audit
+    return panel
+
+
+def build_cached_panel(ds,cfg):
+    """Cache features by complete input hashes, time rules and configuration."""
+    import hashlib,json
+    from pathlib import Path
+    from .config import ROOT
+    from .data import dataset_hash
+    key=hashlib.sha256(json.dumps([dataset_hash(ds.folder),ds.manifest,cfg.dict(),"features-v3"],sort_keys=True,default=str).encode()).hexdigest()
+    path=ROOT/"runs/panel-cache"/f"{key}.parquet"
+    if path.exists():
+        panel=pd.read_parquet(path)
+        # A replay slice may end earlier than the full source dataset.
+        return panel[panel.date.between(ds["prices"].date.min(),ds["prices"].date.max())].copy()
+    panel=build_panel(ds,cfg);path.parent.mkdir(exist_ok=True,parents=True)
+    temporary=path.with_suffix(".tmp.parquet");panel.to_parquet(temporary,index=False);temporary.replace(path)
     return panel

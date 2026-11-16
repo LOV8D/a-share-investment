@@ -583,6 +583,21 @@ def _build_prices(
     if len(actions):
         actions = actions[actions.date.isin(sessions)].copy()
     references = _reference_actions(sessions, set(expected))
+    try:
+        from .data_repairs import fetch_report
+        supplemental=[]
+        names=sorted(action_symbols)
+        for offset in range(0,len(names),30):
+            codes=','.join('"'+s[:6]+'"' for s in names[offset:offset+30])
+            source=fetch_report("RPT_SHAREBONUS_DET",f'(SECURITY_CODE in ({codes}))',raw_dir/f'action_fallback_{offset}.json')
+            for r in source:
+                if not r.get("EX_DIVIDEND_DATE") or not r.get("NOTICE_DATE"):continue
+                date=pd.Timestamp(r["EX_DIVIDEND_DATE"]).normalize()
+                if date not in sessions:continue
+                supplemental.append({"date":date,"symbol":r["SECUCODE"],"cash_per_share":float(r.get("PRETAX_BONUS_RMB") or 0)/10,"share_multiplier":1+float(r.get("BONUS_IT_RATIO") or 0)/10,"known_at":_local_time(r["NOTICE_DATE"],"23:59:59")})
+        if supplemental:references=merge_table(references,pd.DataFrame(supplemental),"actions")
+    except Exception as exc:
+        warnings.append("独立公司行动备用源未完成："+type(exc).__name__)
     if len(references):
         _save_frame(raw_dir / "source_cited_reference_actions.parquet", references)
         actions = merge_table(actions, references, "actions")
@@ -712,8 +727,23 @@ def _refresh_fundamentals(provider: BaoStockProvider, existing: pd.DataFrame, sy
     needed = [symbol for symbol in sorted(symbols) if pd.Timestamp(latest.get(symbol, "1900-01-01")) < period]
     if not needed:
         return pd.DataFrame(columns=SCHEMAS["fundamentals"]), []
+    # Exact monetary statements are preferable to inferred balance-sheet values.
+    try:
+        from .data_repairs import collect_repairs
+        fallback=raw_dir/"exact_financials"
+        collect_repairs(BASE_ROOT,fallback,symbols=needed,report_period=str(period.date()))
+        exact=pd.read_parquet(fallback/"fundamentals_repaired.parquet")
+        exact=exact[exact.report_period==period]
+        if len(exact):return exact, ([] if len(exact)==len(needed) else [f"仅取得{len(exact)}/{len(needed)}只新财报，其余沿用旧记录"])
+    except Exception:
+        pass
+    if hasattr(provider,"set_socket_timeout"):provider.set_socket_timeout(8.)
     rows, warnings, raw = [], [], []
+    started=time.monotonic()
     for index, symbol in enumerate(needed):
+        if time.monotonic()-started>120:
+            warnings.append("财报补充达到120秒预算，未更新证券沿用旧记录")
+            break
         try:
             profit = provider.financial("profit", symbol, year, quarter)
             if profit.empty:
@@ -1050,7 +1080,7 @@ def collect_live(
                 _save_frame(overlay_root / "calendar.parquet", overlay_calendar)
                 current_symbols = set(all_overlay_universe.loc[all_overlay_universe.date == latest, "symbol"])
                 fundamentals, fundamental_warnings = _refresh_fundamentals(
-                    provider, base["fundamentals"], current_symbols, latest, raw_dir, progress
+                    provider, merge_table(base["fundamentals"],_read_optional(overlay_root,"fundamentals"),"fundamentals"), current_symbols, latest, raw_dir, progress
                 )
                 overlay_fundamentals = merge_table(_read_optional(overlay_root, "fundamentals"), fundamentals, "fundamentals")
                 _save_frame(overlay_root / "fundamentals.parquet", overlay_fundamentals)

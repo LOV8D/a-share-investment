@@ -77,6 +77,7 @@ numpy==2.4.6 ; python_full_version < '3.12'
     #   pandas
     #   scikit-learn
     #   scipy
+    #   xgboost
 numpy==2.5.3 ; python_full_version >= '3.12'
     # via
     #   a-share-investment
@@ -84,6 +85,11 @@ numpy==2.5.3 ; python_full_version >= '3.12'
     #   pandas
     #   scikit-learn
     #   scipy
+    #   xgboost
+nvidia-nccl-cu12==2.32.6 ; python_full_version < '3.12' and sys_platform == 'linux'
+    # via xgboost
+nvidia-nccl-cu13==2.32.6 ; python_full_version >= '3.12' and sys_platform == 'linux'
+    # via xgboost
 openpyxl==3.1.5
     # via
     #   a-share-investment
@@ -103,6 +109,8 @@ pydantic==2.13.5
     # via fastapi
 pydantic-core==2.46.5
     # via pydantic
+pypdf==7.1.0
+    # via a-share-investment
 python-dateutil==2.9.0.post0
     # via pandas
 pytz==2026.3.post1
@@ -116,11 +124,13 @@ scipy==1.17.1 ; python_full_version < '3.12'
     #   a-share-investment
     #   lightgbm
     #   scikit-learn
+    #   xgboost
 scipy==1.18.1 ; python_full_version >= '3.12'
     # via
     #   a-share-investment
     #   lightgbm
     #   scikit-learn
+    #   xgboost
 six==1.17.0
     # via
     #   html5lib
@@ -158,5 +168,9 @@ uvicorn==0.53.0
     # via a-share-investment
 webencodings==0.6.1
     # via html5lib
+xgboost==3.2.0 ; python_full_version < '3.12'
+    # via a-share-investment
+xgboost==3.4.1 ; python_full_version >= '3.12'
+    # via a-share-investment
 xlrd==2.0.2
     # via akshare

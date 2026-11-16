@@ -40,11 +40,19 @@ def production_scores(frame, cfg):
     d["worldquant_score_rank"] = d.groupby("date").worldquant_score.rank(pct=True)
     d["structured_score"] = ((1-cfg.worldquant_weight) * d.prior_score
                              + cfg.worldquant_weight * d.worldquant_score_rank)
+    if cfg.structured_model == "xgboost":
+        if "structured_prediction" not in d:
+            raise ValueError("XGBoost评分缺少严格历史训练的预测")
+        d["structured_score"] = d.groupby("date").structured_prediction.rank(pct=True)
     # GLM extracts events; deterministic aggregation keeps the portfolio rule
     # auditable. No event means zero active text weight rather than invented news.
     d["text_raw"] = d.event_sentiment - d.event_risk - .25*d.event_disagreement
-    d["text_score"] = d.groupby("date").text_raw.rank(pct=True)
+    d["text_score"] = .5 + .5*np.tanh(d.text_raw)
     active = cfg.enable_text_alpha & d.event_coverage.gt(0)
+    if "reconstructed_text_score" in d:
+        reconstructed=d.reconstructed_text_score.notna()
+        d.loc[reconstructed,"text_score"]=d.loc[reconstructed,"reconstructed_text_score"]
+        active=active | (cfg.enable_text_alpha & reconstructed)
     d["text_model_active"] = active
     d["combined_score"] = d.structured_score
     d.loc[active, "combined_score"] = ((1-cfg.text_alpha_weight)*d.loc[active, "structured_score"]
@@ -63,6 +71,7 @@ class Ensemble:
     trained_through: str
     trained_at: str
     rows: int
+    xgb: object = None
 
 def training_slice(panel, signal_date, cfg):
     dates = pd.DatetimeIndex(panel.date.unique()).sort_values()
@@ -73,6 +82,14 @@ def training_slice(panel, signal_date, cfg):
     first_allowed = prior[max(0, len(prior) - cfg.train_window_days)]
     frame = panel[(panel.date >= first_allowed) & (panel.date <= last_allowed) & (panel.label_end < last_allowed) & (panel.label_available_at < cutoff(last_allowed, cfg.decision_time)) & panel.eligible & panel.target.notna()].copy()
     return frame.sort_values(["date", "symbol"])
+
+
+def training_anchor(panel,signal_date,cfg):
+    """Use the same refit calendar for historical replay and live decisions."""
+    import pandas as pd
+    dates=sorted(panel.loc[(panel.date>=pd.Timestamp(cfg.paper_replay_start)) & (panel.date<=pd.Timestamp(signal_date)),"date"].unique())
+    if not dates:return pd.Timestamp(signal_date)
+    return pd.Timestamp(dates[((len(dates)-1)//cfg.refit_every)*cfg.refit_every])
 
 def fit_model(train, signal_date, cfg):
     if train.date.nunique() < cfg.min_train_days:
@@ -88,9 +105,12 @@ def fit_model(train, signal_date, cfg):
     if cfg.enable_text_alpha and train.event_coverage.mean() >= cfg.min_text_coverage:
         text_model = LGBMRanker(**params)
         text_model.fit(train[cols+tcols], train.relevance, group=train.groupby("date", sort=False).size().to_numpy())
-    return Ensemble(ranker, ridge, text_model, cols, tcols, str(train.date.max().date()), str(signal_date)[:10], len(train))
+    xgb=fit_xgboost(train,cfg) if cfg.structured_model=="xgboost" else None
+    return Ensemble(ranker, ridge, text_model, cols, tcols, str(train.date.max().date()), str(signal_date)[:10], len(train),xgb)
 
 def predict(model, today, cfg):
+    today=today.copy()
+    if model.xgb is not None:today["structured_prediction"]=model.xgb.predict(today[xgboost_columns(today)].fillna(0.))
     d = production_scores(today, cfg)
     d["tree_raw"] = model.ranker.predict(d[model.columns])
     d["ridge_raw"] = model.ridge.predict(d[model.columns])
@@ -127,10 +147,53 @@ def walk_forward(panel, cfg, progress=None):
     return pd.concat(scores, ignore_index=True), folds, final, latest_score
 
 def explanations(model, latest):
-    # Exact LightGBM TreeSHAP contributions, for the tree component only.
-    values = model.ranker.booster_.predict(latest[model.columns], pred_contrib=True)
+    columns=model.columns
+    if model.xgb is not None:
+        import xgboost as xgb
+        columns=xgboost_columns(latest)
+        values=model.xgb.get_booster().predict(xgb.DMatrix(latest[columns].fillna(0.)),pred_contribs=True)
+    else:
+        values = model.ranker.booster_.predict(latest[columns], pred_contrib=True)
     result = {}
     for symbol, row in zip(latest.symbol, values):
         order = np.argsort(np.abs(row[:-1]))[-4:][::-1]
-        result[symbol] = [{"factor": model.columns[i][2:], "contribution": round(float(row[i]), 5)} for i in order]
+        result[symbol] = [{"factor": columns[i][2:], "contribution": round(float(row[i]), 5)} for i in order]
     return result
+
+
+def xgboost_columns(frame):
+    return [f"x_{c}" for c in PRICE_FEATURES+FUND_FEATURES] + sorted(c for c in frame if c.startswith("x_wq"))
+
+
+def fit_xgboost(train,cfg):
+    from xgboost import XGBRanker
+    columns=xgboost_columns(train)
+    if len(columns)<100:raise ValueError("XGBoost必须接收核心因子与83个独立WorldQuant因子")
+    model=XGBRanker(objective="rank:pairwise",n_estimators=120,max_depth=3,learning_rate=.035,min_child_weight=30,subsample=.8,colsample_bytree=.7,reg_lambda=30,random_state=cfg.seed,n_jobs=2,tree_method="hist")
+    model.fit(train[columns].fillna(0.),train.relevance,group=train.groupby("date",sort=False).size().to_numpy())
+    return model
+
+
+def xgboost_walk_scores(panel,cfg,start,end,model_dir=None):
+    from pathlib import Path
+    parts=[];folds=[];model=None
+    dates=sorted(panel.loc[panel.date.between(start,end),"date"].unique())
+    previous_anchor=None
+    for i,day in enumerate(dates):
+        anchor=training_anchor(panel,day,cfg)
+        if model is None or anchor!=previous_anchor:
+            train=training_slice(panel,anchor,cfg)
+            previous_anchor=anchor
+            if train.date.nunique()<cfg.min_train_days:raise ValueError("XGBoost历史训练期不足，不能用测试期补齐")
+            model=fit_xgboost(train,cfg)
+            folds.append({"signal_start":str(day)[:10],"train_start":str(train.date.min().date()),"train_end":str(train.date.max().date()),"latest_label_end":str(train.label_end.max().date()),"train_days":int(train.date.nunique()),"rows":len(train)})
+            if model_dir:
+                Path(model_dir).mkdir(parents=True,exist_ok=True);model.save_model(Path(model_dir)/f"xgb-{str(day)[:10]}.json")
+        today=panel[panel.date==day].copy();today["structured_prediction"]=model.predict(today[xgboost_columns(today)].fillna(0.))
+        parts.append(production_scores(today,cfg))
+    return pd_concat(parts),folds
+
+
+def pd_concat(parts):
+    import pandas as pd
+    return pd.concat(parts,ignore_index=True)

@@ -642,7 +642,7 @@ class Alphas:
         return results
 
 
-def compute_worldquant_composite(prices: pd.DataFrame) -> tuple[pd.DataFrame, list[dict]]:
+def compute_worldquant_composite(prices: pd.DataFrame, keep_factors=False) -> tuple[pd.DataFrame, list[dict]]:
     """Return an equal-weight rank ensemble of every currently usable formula.
 
     Prices must already be point-in-time safe. OHLC and VWAP are adjusted with
@@ -672,6 +672,7 @@ def compute_worldquant_composite(prices: pd.DataFrame) -> tuple[pd.DataFrame, li
     total = pd.DataFrame(0.0, index=close.index, columns=close.columns)
     count = pd.DataFrame(0, index=close.index, columns=close.columns, dtype="int16")
     audit = []
+    individual = []
     implemented = {int(name[5:]) for name in dir(engine) if name.startswith("alpha") and name[5:].isdigit()}
     if implemented != set(USABLE):
         raise RuntimeError(f"Alpha101 实现清单不完整：{sorted(set(USABLE) - implemented)}")
@@ -679,6 +680,7 @@ def compute_worldquant_composite(prices: pd.DataFrame) -> tuple[pd.DataFrame, li
         name = f"alpha{number:03d}"
         value = getattr(engine, name)().replace([np.inf, -np.inf], np.nan)
         ranked = value.rank(axis=1, pct=True, method="average")
+        if keep_factors:individual.append(ranked.stack(future_stack=True).rename(f"x_wq{number:03d}").sub(.5))
         valid = ranked.notna()
         total = total.add(ranked.fillna(0.0), fill_value=0.0)
         count = count.add(valid.astype("int16"), fill_value=0).astype("int16")
@@ -694,6 +696,7 @@ def compute_worldquant_composite(prices: pd.DataFrame) -> tuple[pd.DataFrame, li
          count.div(len(USABLE)).stack(future_stack=True).rename("worldquant_coverage")],
         axis=1,
     ).reset_index()
+    if individual:result = result.merge(pd.concat(individual,axis=1).reset_index(),on=["date","symbol"],how="left")
     result["worldquant_factor_count"] = len(USABLE)
     return result, audit
 
