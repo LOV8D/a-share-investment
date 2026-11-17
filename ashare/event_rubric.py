@@ -1,4 +1,4 @@
-"""Public, evidence-based GLM scoring rubric; no request for hidden reasoning."""
+"""Public, evidence-based AI scoring rubric; no request for hidden reasoning."""
 RUBRIC = '''按以下可审计评估表处理原文，不输出内部思维链：
 1. fact_summary：一句话概括原文事实，禁止把计划当已发生结果；
 2. surprise：相对原文明示的预期/指引的意外程度，-1至1；无可核验预期时填null，不能凭记忆编造；

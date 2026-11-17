@@ -113,8 +113,9 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
         panel=panel.merge(signals[["date","symbol","reconstructed_text_score"]],on=["date","symbol"],how="left")
         reconstruction_meta=json.loads((recon/"signals_manifest.json").read_text())
     folds=[]
+    model_root=output_root/"xgb-models"/("zoo-v1" if cfg.factor_zoo_enabled else "legacy")
     if cfg.structured_model=="xgboost":
-        scores,folds=xgboost_walk_scores(panel,replay_cfg,slice_start,requested_end,output_root/"xgb-models")
+        scores,folds=xgboost_walk_scores(panel,replay_cfg,slice_start,requested_end,model_root)
     else:
         scores = _production_scores(panel, slice_start, requested_end, replay_cfg)
     actual_end = scores.date.max()
@@ -185,7 +186,7 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
             "events_usable_by_end": usable_events,
             "future_events_excluded": future_events_excluded,
             "reason": ("仅使用在各信号时点前已发布、已发现且已处理的事件。"
-                       if text_active else "没有在历史信号时点前已处理的事件；禁止把今天生成的GLM结果回填到历史。"),
+                       if text_active else "没有在历史信号时点前已处理的事件；禁止把今天生成的AI结果回填到历史。"),
         },
         "point_in_time_policy": "retrospective_publication_filter" if reconstruction else "strict",
         "reconstruction": reconstruction_meta,
@@ -208,11 +209,11 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
         "model_card": {
             "algorithm": "XGBoost学习23个核心因子与83个WorldQuant因子" if cfg.structured_model=="xgboost" else "核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%",
             "challengers": "本次短区间回放不使用ML挑战者决定订单",
-            "features": 83 + 23,
+            "features": len(folds[-1].get("selected_features",[])) if folds and folds[-1].get("selected_features") else 83+23,
             "text_features": 5,
             "text_active": text_active,
             "text_weight_used": text_weight_used,
-            "explanation":"XGBoost结构化排序70%与GLM事件评分30%融合；历史重建保留真实抓取处理时间。",
+            "explanation":f"XGBoost结构化排序与AI事件评分按{1-cfg.text_alpha_weight:.0%}/{cfg.text_alpha_weight:.0%}后融合；历史重建与严格点时记录分别标识。",
             "train_end": folds[-1]["train_end"] if folds else "固定透明规则，不在回放区间拟合权重",
             "train_rows": folds[-1]["rows"] if folds else 0,
             "horizon": replay_cfg.label_horizon,
@@ -221,7 +222,7 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
         "factors": [],
         "candidates": [],
         "folds": folds,
-        "ablation": [{"name": ("XGBoost + GLM历史重建" if reconstruction else "日度前十生产组合"), **metrics}],
+        "ablation": [{"name": ("XGBoost + AI历史重建" if reconstruction else "日度前十生产组合"), **metrics}],
         "config": replay_cfg.dict(),
         "input_collection_id": ds.manifest.get("collection_id"),
         "curve": curve.to_dict("records"),
@@ -268,9 +269,29 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
                 row["target_weight"]=plan["target_weights"].get(row["symbol"],0.)
                 row["explanations"]=[]
                 row["minimum_order_value"]=float(row["close"])*float(row.get("min_order",100))
+            if cfg.structured_model=="xgboost" and folds:
+                from xgboost import XGBRanker,DMatrix
+                import numpy as np
+                latest_model=XGBRanker();latest_model.load_model(model_root/f"xgb-{folds[-1]['signal_start']}.json")
+                columns=latest_model.get_booster().feature_names
+                contributions=latest_model.get_booster().predict(DMatrix(latest_scores[columns].fillna(0.)),pred_contribs=True)
+                for row,values in zip(ranked,contributions):
+                    indices=np.argsort(np.abs(values[:-1]))[-4:][::-1]
+                    row["explanations"]=[{"factor":columns[i][2:],"contribution":float(values[i])} for i in indices]
             report["rankings"]=ranked
             write_json(run_dir/"plan.json",plan)
             pd.DataFrame(plan["orders"]).to_csv(run_dir/"orders.csv",index=False)
+    if folds and cfg.structured_model=="xgboost":
+        importance_path=model_root/f"xgb-{folds[-1]['signal_start']}.importance.json"
+        report["feature_importance"]=json.loads(importance_path.read_text())
+        write_json(run_dir/"factor_importance.json",report["feature_importance"])
+        screen_path=importance_path.with_name(f"xgb-{folds[-1]['signal_start']}.screen.json")
+        if screen_path.exists():
+            report["factor_screen"]=json.loads(screen_path.read_text())
+            report["model_card"]["features"]=report["factor_screen"]["selected_count"]
+            report["model_card"]["algorithm"]="XGBoost（264候选因子训练期粗筛后学习组合）"
+            report["factor_screen_history"]=[json.loads((model_root/f"xgb-{f['signal_start']}.screen.json").read_text()) for f in folds]
+            write_json(run_dir/"factor_screen.json",report["factor_screen"])
     report["data_audit"]={"quarantined_symbols":len({q["symbol"] for q in ds.manifest.get("corporate_action_quarantine",[])}),"repair_source":ds.manifest.get("repair_source")}
     write_json(run_dir / "report.json", report)
     write_json(run_dir / "config.json", replay_cfg.dict())
@@ -296,7 +317,7 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
         f"- 最大回撤：{metrics['max_drawdown']:.2%}\n"
         f"- 成交订单：{report['filled_orders']}\n"
         f"- 累计费用：¥{metrics['total_fees']:,.2f}\n\n"
-        f"文本/GLM实际权重：{text_weight_used:.0%}。没有把事后抓取或事后处理的文本倒灌进回放。\n"
+        f"文本/AI实际权重：{text_weight_used:.0%}。没有把事后抓取或事后处理的文本倒灌进回放。\n"
     )
     (run_dir / "summary.md").write_text(summary, encoding="utf-8")
     return report

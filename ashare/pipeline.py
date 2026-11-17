@@ -131,7 +131,7 @@ def run_engine(folder,cfg,kind="research",output_root=None,progress=None):
     if cfg.initial_cash<plan["minimum_capital_for_topk"]:warnings.append(f"当前资金无法在单股上限内持有全部理论前{cfg.top_k}名；按最低申报数量筛选可实现标的。")
     if not plan["rebalance_due"]:warnings.append(plan["schedule_reason"])
     text_active=bool(latest.text_model_active.any())
-    if not text_active:warnings.append("当前信号时点没有合格的GLM事件，文本实际权重为0；不会回填未来信息。")
+    if not text_active:warnings.append("当前信号时点没有合格的AI事件，文本实际权重为0；不会回填未来信息。")
     next_open=cutoff(next_date,"09:30:00")
     if next_open<pd.Timestamp.now(tz="Asia/Shanghai"):
         if plan["orders"]:
@@ -143,7 +143,16 @@ def run_engine(folder,cfg,kind="research",output_root=None,progress=None):
     if backtest_audit.get("terminal_suspended_positions"):
         warnings.append("回测末日仍持有停牌/退市证券，缺少换股映射；该次回测不能通过公司行动审计。")
     report_mode="synthetic" if synthetic else ("forward_paper" if ds.manifest.get("mode")=="forward_paper" else "real_research")
-    report={"run_id":run_id,"kind":kind,"mode":report_mode,"as_of":str(latest_date.date()),"decision_cutoff":str(decision_cutoff),"next_session":str(next_date.date()),"historical_research_cutoff":ds.manifest.get("historical_research_cutoff"),"config":cfg.dict(),"metrics":metrics|ic_summary,"curve":curves,"rankings":ranked,"plan":plan,"factors":factor_rows,"candidates":factor_candidates(panel,cfg),"events":events.to_dict("records"),"folds":folds,"ablation":ablation,"backtest_audit":backtest_audit,"quality":ds.quality,"warnings":warnings,"worldquant101":{"usable":83,"unavailable":18,"unavailable_ids":[48,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100]},"model_card":{"algorithm":"XGBoost（23核心因子 + 83 WorldQuant因子）" if cfg.structured_model=="xgboost" else "核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%","challengers":"LightGBM LambdaRank + Ridge（仅观察，不参与订单）","features":106 if model.xgb is not None else len(model.columns),"text_features":len(model.text_columns),"text_active":text_active,"text_weight_used":cfg.text_alpha_weight if text_active else 0.,"train_end":model.trained_through,"train_rows":model.rows,"horizon":cfg.label_horizon,"refit_every":cfg.refit_every,"explanation":f"GLM只抽取当时可见事件；结构化分数{1-cfg.text_alpha_weight:.0%}与事件分数{cfg.text_alpha_weight:.0%}做后融合。无合格事件时结构化分数权重为100%。TreeSHAP解释当前使用的树模型。","validation":"每日收盘评分、下一交易日开盘调仓；成熟标签、时间隔离与滚动样本外挑战者预测","live_ready":False}}
+    report={"run_id":run_id,"kind":kind,"mode":report_mode,"as_of":str(latest_date.date()),"decision_cutoff":str(decision_cutoff),"next_session":str(next_date.date()),"historical_research_cutoff":ds.manifest.get("historical_research_cutoff"),"config":cfg.dict(),"metrics":metrics|ic_summary,"curve":curves,"rankings":ranked,"plan":plan,"factors":factor_rows,"candidates":factor_candidates(panel,cfg),"events":events.to_dict("records"),"folds":folds,"ablation":ablation,"backtest_audit":backtest_audit,"quality":ds.quality,"warnings":warnings,"worldquant101":{"usable":83,"unavailable":18,"unavailable_ids":[48,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100]},"model_card":{"algorithm":"XGBoost（23核心因子 + 83 WorldQuant因子）" if cfg.structured_model=="xgboost" else "核心价值/质量/低风险 50% + WorldQuant 101可用因子组 50%","challengers":"LightGBM LambdaRank + Ridge（仅观察，不参与订单）","features":len(model.xgb.get_booster().feature_names) if model.xgb is not None else len(model.columns),"text_features":len(model.text_columns),"text_active":text_active,"text_weight_used":cfg.text_alpha_weight if text_active else 0.,"train_end":model.trained_through,"train_rows":model.rows,"horizon":cfg.label_horizon,"refit_every":cfg.refit_every,"explanation":f"AI只抽取当时可见事件；结构化分数{1-cfg.text_alpha_weight:.0%}与事件分数{cfg.text_alpha_weight:.0%}做后融合。无合格事件时结构化分数权重为100%。TreeSHAP解释当前使用的树模型。","validation":"每日收盘评分、下一交易日开盘调仓；成熟标签、时间隔离与滚动样本外挑战者预测","live_ready":False}}
+    if model.xgb is not None:
+        from .importance import xgboost_importance
+        report["feature_importance"]=xgboost_importance(model.xgb,train_end=model.trained_through,signal_start=str(latest_date.date()))
+        write_json(run_dir/"factor_importance.json",report["feature_importance"])
+        if getattr(model.xgb,"factor_screen_",None):
+            report["factor_screen"]=model.xgb.factor_screen_
+            report["model_card"]["algorithm"]="XGBoost（264候选因子训练期粗筛后学习组合）"
+            report["model_card"]["algorithm"]="XGBoost（264候选因子训练期粗筛后学习组合）"
+            write_json(run_dir/"factor_screen.json",report["factor_screen"])
     report=clean(report)
     write_json(run_dir/"report.json",report)
     write_json(run_dir/"plan.json",plan)

@@ -44,7 +44,7 @@ def production_scores(frame, cfg):
         if "structured_prediction" not in d:
             raise ValueError("XGBoost评分缺少严格历史训练的预测")
         d["structured_score"] = d.groupby("date").structured_prediction.rank(pct=True)
-    # GLM extracts events; deterministic aggregation keeps the portfolio rule
+    # AI extracts events; deterministic aggregation keeps the portfolio rule
     # auditable. No event means zero active text weight rather than invented news.
     d["text_raw"] = d.event_sentiment - d.event_risk - .25*d.event_disagreement
     d["text_score"] = .5 + .5*np.tanh(d.text_raw)
@@ -110,7 +110,7 @@ def fit_model(train, signal_date, cfg):
 
 def predict(model, today, cfg):
     today=today.copy()
-    if model.xgb is not None:today["structured_prediction"]=model.xgb.predict(today[xgboost_columns(today)].fillna(0.))
+    if model.xgb is not None:today["structured_prediction"]=model.xgb.predict(today[xgboost_columns(today,model.xgb)].fillna(0.))
     d = production_scores(today, cfg)
     d["tree_raw"] = model.ranker.predict(d[model.columns])
     d["ridge_raw"] = model.ridge.predict(d[model.columns])
@@ -150,7 +150,7 @@ def explanations(model, latest):
     columns=model.columns
     if model.xgb is not None:
         import xgboost as xgb
-        columns=xgboost_columns(latest)
+        columns=xgboost_columns(latest,model.xgb)
         values=model.xgb.get_booster().predict(xgb.DMatrix(latest[columns].fillna(0.)),pred_contribs=True)
     else:
         values = model.ranker.booster_.predict(latest[columns], pred_contrib=True)
@@ -161,16 +161,25 @@ def explanations(model, latest):
     return result
 
 
-def xgboost_columns(frame):
-    return [f"x_{c}" for c in PRICE_FEATURES+FUND_FEATURES] + sorted(c for c in frame if c.startswith("x_wq"))
+def xgboost_columns(frame,model=None):
+    if model is not None:return model.get_booster().feature_names
+    from .factor_screen import candidate_columns
+    return candidate_columns(frame)
 
 
 def fit_xgboost(train,cfg):
     from xgboost import XGBRanker
     columns=xgboost_columns(train)
     if len(columns)<100:raise ValueError("XGBoost必须接收核心因子与83个独立WorldQuant因子")
+    screen=None
+    if cfg.factor_zoo_enabled:
+        if sum(c.startswith("x_q158_") for c in columns)!=158:
+            raise ValueError("扩展因子池已开启，但158个Alpha158候选不完整；禁止静默使用旧模型")
+        from .factor_screen import screen_factors
+        screen=screen_factors(train,cfg);columns=screen["selected_features"]
     model=XGBRanker(objective="rank:pairwise",n_estimators=120,max_depth=3,learning_rate=.035,min_child_weight=30,subsample=.8,colsample_bytree=.7,reg_lambda=30,random_state=cfg.seed,n_jobs=2,tree_method="hist")
     model.fit(train[columns].fillna(0.),train.relevance,group=train.groupby("date",sort=False).size().to_numpy())
+    model.factor_screen_=screen
     return model
 
 
@@ -189,7 +198,13 @@ def xgboost_walk_scores(panel,cfg,start,end,model_dir=None):
             folds.append({"signal_start":str(day)[:10],"train_start":str(train.date.min().date()),"train_end":str(train.date.max().date()),"latest_label_end":str(train.label_end.max().date()),"train_days":int(train.date.nunique()),"rows":len(train)})
             if model_dir:
                 Path(model_dir).mkdir(parents=True,exist_ok=True);model.save_model(Path(model_dir)/f"xgb-{str(day)[:10]}.json")
-        today=panel[panel.date==day].copy();today["structured_prediction"]=model.predict(today[xgboost_columns(today)].fillna(0.))
+                import json
+                from .importance import xgboost_importance
+                artifact=xgboost_importance(model,**folds[-1])
+                if model.factor_screen_:
+                    (Path(model_dir)/f"xgb-{str(day)[:10]}.screen.json").write_text(json.dumps(model.factor_screen_,ensure_ascii=False,allow_nan=False),encoding="utf-8")
+                (Path(model_dir)/f"xgb-{str(day)[:10]}.importance.json").write_text(json.dumps(artifact,ensure_ascii=False),encoding="utf-8")
+        today=panel[panel.date==day].copy();today["structured_prediction"]=model.predict(today[xgboost_columns(today,model)].fillna(0.))
         parts.append(production_scores(today,cfg))
     return pd_concat(parts),folds
 

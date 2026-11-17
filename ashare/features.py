@@ -108,6 +108,9 @@ def build_panel(ds, cfg):
     panel = pd.concat(frames, ignore_index=True)
     wq, wq_audit = compute_worldquant_composite(panel,keep_factors=cfg.structured_model=="xgboost")
     panel = panel.merge(wq, on=["date", "symbol"], how="left")
+    if cfg.factor_zoo_enabled and cfg.structured_model=="xgboost":
+        from .alpha158 import compute_alpha158
+        panel=panel.merge(compute_alpha158(prices),on=["date","symbol"],how="left",validate="one_to_one")
     panel = panel.merge(ds["universe"], on=["date", "symbol"], how="inner")
     late = (panel.known_at > panel.cutoff) | (panel.available_at > panel.cutoff)
     if late.any():
@@ -132,7 +135,7 @@ def build_panel(ds, cfg):
     panel["relevance"] = panel.groupby("date").forward_return.rank(pct=True).mul(4.999).fillna(0).astype(int)
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     panel.attrs["worldquant_audit"] = wq_audit
-    return panel
+    return normalize_zoo_cross_section(panel)
 
 
 def build_cached_panel(ds,cfg):
@@ -141,12 +144,25 @@ def build_cached_panel(ds,cfg):
     from pathlib import Path
     from .config import ROOT
     from .data import dataset_hash
-    key=hashlib.sha256(json.dumps([dataset_hash(ds.folder),ds.manifest,cfg.dict(),"features-v3"],sort_keys=True,default=str).encode()).hexdigest()
+    key=hashlib.sha256(json.dumps([dataset_hash(ds.folder),ds.manifest,cfg.dict(),"features-v4-alpha158"],sort_keys=True,default=str).encode()).hexdigest()
     path=ROOT/"runs/panel-cache"/f"{key}.parquet"
     if path.exists():
         panel=pd.read_parquet(path)
         # A replay slice may end earlier than the full source dataset.
-        return panel[panel.date.between(ds["prices"].date.min(),ds["prices"].date.max())].copy()
+        return normalize_zoo_cross_section(panel[panel.date.between(ds["prices"].date.min(),ds["prices"].date.max())].copy())
     panel=build_panel(ds,cfg);path.parent.mkdir(exist_ok=True,parents=True)
     temporary=path.with_suffix(".tmp.parquet");panel.to_parquet(temporary,index=False);temporary.replace(path)
+    return panel
+
+
+def normalize_zoo_cross_section(panel):
+    """Normalize Alpha158 only over that date's historical CSI300 membership.
+
+    The wide rolling calculation keeps pre-entry price history. Re-ranking
+    after the dated membership join removes any influence of non-members on
+    percentile spacing. This is idempotent for both old and new caches.
+    """
+    columns=[c for c in panel if c.startswith('x_q158_')]
+    if columns:
+        panel[columns]=panel[columns].groupby(panel.date).rank(pct=True).sub(.5).astype('float32')
     return panel

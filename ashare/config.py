@@ -33,6 +33,13 @@ class Config:
     text_alpha_weight: float = .30
     structured_model: str = "prior"
     worldquant_weight: float = .50
+    factor_zoo_enabled: bool = True
+    factor_screen_max: int = 60
+    factor_screen_min_coverage: float = .8
+    factor_screen_min_ic: float = .01
+    factor_screen_max_correlation: float = .85
+    factor_screen_min_sharpe: float = 0.
+    factor_screen_cost_bps: float = 20.
     min_text_coverage: float = .05
     min_liquidity: float = 20_000_000
     min_listed_days: int = 120
@@ -68,6 +75,10 @@ class Config:
             raise ValueError("持股数、每日订单上限、重训间隔和缓冲名次必须为合法整数")
         if not 0<=self.min_text_coverage<=1 or self.min_liquidity<0 or self.min_listed_days<0:
             raise ValueError("数据覆盖率/筛选阈值不合法")
+        if type(self.factor_zoo_enabled) is not bool or type(self.factor_screen_max) is not int or not 1<=self.factor_screen_max<=264:
+            raise ValueError("因子筛选数量须为1–264的整数")
+        if not (0<self.factor_screen_min_coverage<=1 and 0<=self.factor_screen_min_ic<1 and 0<self.factor_screen_max_correlation<=1 and self.factor_screen_cost_bps>=0):
+            raise ValueError("因子筛选阈值不合法")
         if self.structured_model not in {"prior", "xgboost"}:
             raise ValueError("structured_model 必须为 prior 或 xgboost")
         if self.rebalance_frequency not in {"daily", "weekly"}:

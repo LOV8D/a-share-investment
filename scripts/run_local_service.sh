@@ -1,5 +1,5 @@
 #!/bin/zsh
-# launchd owns this web process; the product's own switch controls the schedule.
+# The detached launcher owns this web process; the product's own switch controls the schedule.
 set -e
 cd "$(dirname "$0")/.."
 if [ -f .env ]; then

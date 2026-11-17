@@ -172,8 +172,6 @@ def intelligence():
         "events":records,
         "reconstruction":reconstruction,
         "historical_events":historical_events,
-        "historical_events":historical_events,
-        "historical_events":historical_events,
         "document_count":int(len(documents)),
         "event_count":int(len(events)),
         "pending_documents":max(0,int(len(documents))-extracted_documents),
@@ -335,7 +333,7 @@ def launch_job(mode,kind,scheduled_date=None,scheduled_attempt_date=None):
                     folder=LIVE_ROOT/"current"
                     if cfg.enable_text_alpha:
                         from .events import extract_current_documents
-                        state.update(message="GLM提取当时可见事件",progress=.56)
+                        state.update(message="AI提取当时可见事件",progress=.56)
                         extract_current_documents(folder)
                     state.update(message="更新模拟账户",progress=.57)
                     advance_paper_account(folder,cfg,LIVE_ROOT)
@@ -442,7 +440,7 @@ def scheduler_loop(stop):
 
 @app.get("/api/download/{run_id}/{filename}")
 def download(run_id:str,filename:str):
-    allowed={"orders.csv","plan.json","rankings.csv","equity_curve.csv","executions.csv","daily_ic.csv","manifest.json","report.json","config.json"}
+    allowed={"factor_screen.json","factor_importance.json","orders.csv","plan.json","rankings.csv","equity_curve.csv","executions.csv","daily_ic.csv","manifest.json","report.json","config.json"}
     if filename not in allowed or Path(run_id).name!=run_id:raise HTTPException(400,"非法下载路径")
     path=ROOT/"runs"/run_id/filename
     if not path.exists():raise HTTPException(404,"该运行未生成此文件")

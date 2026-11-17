@@ -1,4 +1,4 @@
-"""Retrospective GLM signals. Actual retrieval/processing clocks are preserved."""
+"""Retrospective AI signals. Actual retrieval/processing clocks are preserved."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib,json,os
 from pathlib import Path
@@ -16,7 +16,7 @@ def reconstruct(output,folder,start,end,workers=4,batch_size=8):
     docs['day']=pd.to_datetime(docs.published_at,utc=True).dt.tz_convert('Asia/Shanghai').dt.strftime('%Y-%m-%d')
     # Fail fast for disabled credentials, before scheduling a large batch.
     probe=httpx.post(os.environ['AI_BASE_URL'].rstrip('/')+'/chat/completions',headers={'Authorization':'Bearer '+os.environ['AI_API_KEY']},json={'model':model,'messages':[{'role':'user','content':'只返回JSON：{"ok":true}'}],'max_tokens':30},timeout=30)
-    if probe.status_code in (401,403):raise RuntimeError('GLM密钥未授权或被停用，未生成任何历史事件信号')
+    if probe.status_code in (401,403):raise RuntimeError('AI密钥未授权或被停用，未生成任何历史事件信号')
     probe.raise_for_status()
     jobs=[]
     for day,g in docs.groupby('day',sort=True):
@@ -57,7 +57,7 @@ def reconstruct(output,folder,start,end,workers=4,batch_size=8):
             except Exception as exc:
                 errors.append({'day':futures[f],'error':type(exc).__name__});failed_batches.append(futures[f])
             if (i+1)%5==0:
-                print(f'GLM历史批次 {i+1}/{len(jobs)}，合格事件 {len(events)}，失败 {len(errors)}，最近失败类型 '+str(errors[-1].get('error') if errors else '无'),flush=True)
+                print(f'AI历史批次 {i+1}/{len(jobs)}，合格事件 {len(events)}，失败 {len(errors)}，最近失败类型 '+str(errors[-1].get('error') if errors else '无'),flush=True)
     for event in events:
         for key in ['surprise','priced_in']:
             value=event.get(key)
@@ -72,13 +72,13 @@ def reconstruct(output,folder,start,end,workers=4,batch_size=8):
         event['text_sha256']=hashlib.sha256(str(document['text']).encode()).hexdigest()
     if not events:
         (output/'errors.json').write_text(json.dumps(errors,ensure_ascii=False,indent=2))
-        raise RuntimeError('GLM未生成任何合格事件；不会伪造30%事件回测。检查密钥与errors.json。')
+        raise RuntimeError('AI未生成任何合格事件；不会伪造30%事件回测。检查密钥与errors.json。')
     allowed=['event_id','document_id','symbol','category','sentiment','materiality','confidence','novelty','evidence','source_type','source_url','published_at','first_seen_at','processed_at','title','text_scope','model','prompt_version','signal_day','retrospective','fact_summary','surprise','affected_business','horizon_days','priced_in','risk_flags','text_sha256']
     events=[{key:e.get(key) for key in allowed} for e in events]
     pd.DataFrame(events).to_parquet(output/'events.parquet',index=False)
     (output/'errors.json').write_text(json.dumps(errors,ensure_ascii=False,indent=2))
     if not events or failed_batches:
-        raise RuntimeError('GLM历史批次未完整成功；保留缓存，拒绝发布无事件的假30%回测')
+        raise RuntimeError('AI历史批次未完整成功；保留缓存，拒绝发布无事件的假30%回测')
     sessions=read_table(folder,'calendar').date
     sessions=sessions[sessions.between(pd.Timestamp(start),pd.Timestamp(end))]
     universe=read_table(folder,'universe');signals=[];e=pd.DataFrame(events)
@@ -96,5 +96,5 @@ def reconstruct(output,folder,start,end,workers=4,batch_size=8):
                 raw+=w*(event['sentiment']-max(-event['sentiment'],0))
             signals.append({'date':day,'symbol':symbol,'reconstructed_text_score':float(.5+.5*np.tanh(raw)),'event_count':len(se),'retrospective':True})
     pd.DataFrame(signals).to_parquet(output/'daily_signals.parquet',index=False)
-    summary={'mode':'retrospective_event_reconstruction','model':model,'start':start,'end':end,'documents_selected':len(docs),'events':len(events),'errors':len(docs)-len({e['document_id'] for e in events}),'sessions':len(sessions),'created_at':now,'text_weight':.3,'warning':'按历史发布时间筛选，但材料今天采集、模型今天处理；无法证明GLM训练记忆不含未来。无事件股票为中性50分，不伪造事件。'}
+    summary={'mode':'retrospective_event_reconstruction','model':model,'start':start,'end':end,'documents_selected':len(docs),'events':len(events),'errors':len(docs)-len({e['document_id'] for e in events}),'sessions':len(sessions),'created_at':now,'text_weight':.3,'warning':'按历史发布时间筛选，但材料今天采集、模型今天处理；无法证明AI训练记忆不含未来。无事件股票为中性50分，不伪造事件。'}
     (output/'signals_manifest.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2));return summary

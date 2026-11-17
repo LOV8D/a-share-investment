@@ -14,7 +14,7 @@ def test_reconstructed_signals_use_thirty_percent_and_no_silent_xgb_fallback():
     with pytest.raises(ValueanáError if False else ValueError):production_scores(f.drop(columns='structured_prediction'),cfg)
 
 def test_xgboost_trains_only_matured_historical_labels():
-    cfg=replace(Config(),min_train_days=40,embargo_days=5,train_window_days=60,structured_model='xgboost')
+    cfg=replace(Config(),min_train_days=40,embargo_days=5,train_window_days=60,structured_model='xgboost',factor_zoo_enabled=False)
     dates=pd.bdate_range('2025-01-01',periods=100)
     f=pd.MultiIndex.from_product([dates,['000001.SZ','600000.SH']],names=['date','symbol']).to_frame(index=False)
     f['label_end']=f.date+pd.Timedelta(days=9);f['label_available_at']=pd.to_datetime(f.label_end).dt.tz_localize('Asia/Shanghai')+pd.Timedelta(hours=18)
