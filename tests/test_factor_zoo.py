@@ -51,6 +51,10 @@ def test_screen_excludes_missing_and_correlated_and_never_reads_future():
     f=screening_fixture();cfg=replace(Config(),min_train_days=40,train_window_days=150,factor_screen_cost_bps=0.)
     signal=f.date.unique()[150];train=training_slice(f,signal,cfg)
     selected=screen_factors(train,cfg)
+    assert selected['selected_count']==80
+    assert selected['range_met'] is True
+    assert all(row['coverage']>=cfg.factor_screen_min_coverage for row in selected['rows'] if row['selected'])
+    assert any(row['diagnostic_flags'] for row in selected['rows'] if row['selected'])
     pair={'x_q158_good','x_q158_duplicate'}
     assert len(pair.intersection(selected['selected_features']))==1
     missing=next(x for x in selected['rows'] if x['feature']=='x_q158_missing')
@@ -77,3 +81,23 @@ def test_enabled_zoo_rejects_incomplete_candidates():
     frame=screening_fixture()
     with pytest.raises(ValueError,match='158个Alpha158候选不完整'):
         fit_xgboost(frame,Config())
+
+
+def test_screen_budget_limits_are_explicit():
+    import pytest
+    assert Config(factor_screen_target=50).factor_screen_target==50
+    assert Config(factor_screen_target=100).factor_screen_target==100
+    for invalid in [{'factor_screen_target':49},{'factor_screen_target':101},{'factor_screen_min':90},{'factor_screen_max':70}]:
+        with pytest.raises(ValueError,match='粗筛数量'):
+            Config(**invalid)
+
+def test_all_catalog_factors_have_readable_formulas():
+    from ashare.factor_screen import factor_catalog
+    from ashare.factor_definitions import definition_for
+    rows=factor_catalog()
+    assert len(rows)==264
+    assert all(row.get('definition') and row.get('formula') for row in rows)
+    assert definition_for('earnings_yield')['formula']=='net_profit_TTM / market_cap'
+    assert definition_for('q158_wvma60')['definition'].startswith('60日')
+    assert 'Corr' in definition_for('wq027')['formula']
+    assert 'worldquant101.py::' not in definition_for('wq027')['formula']

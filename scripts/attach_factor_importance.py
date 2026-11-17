@@ -18,7 +18,9 @@ def main():
     report = json.loads((folder / "report.json").read_text())
     fold = report["folds"][-1]
     model_root=ROOT / "runs/xgb-models"
-    if report.get("config",{}).get("factor_zoo_enabled"):model_root=model_root/"zoo-v1"
+    if report.get("config",{}).get("factor_zoo_enabled"):
+        version="zoo-v2" if report.get("factor_screen",{}).get("version", "").startswith("alpha158-screen-v2") else "zoo-v1"
+        model_root=model_root/version
     elif (model_root/"legacy").exists():model_root=model_root/"legacy"
     path = model_root / f"xgb-{fold['signal_start']}.json"
     # models imports the shared macOS OpenMP library before XGBoost is loaded.

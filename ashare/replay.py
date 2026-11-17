@@ -113,7 +113,7 @@ def run_replay(folder, cfg: Config, start, end, output_root=None, reconstruction
         panel=panel.merge(signals[["date","symbol","reconstructed_text_score"]],on=["date","symbol"],how="left")
         reconstruction_meta=json.loads((recon/"signals_manifest.json").read_text())
     folds=[]
-    model_root=output_root/"xgb-models"/("zoo-v1" if cfg.factor_zoo_enabled else "legacy")
+    model_root=output_root/"xgb-models"/("zoo-v2" if cfg.factor_zoo_enabled else "legacy")
     if cfg.structured_model=="xgboost":
         scores,folds=xgboost_walk_scores(panel,replay_cfg,slice_start,requested_end,model_root)
     else:

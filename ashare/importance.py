@@ -1,5 +1,6 @@
 """Export auditable XGBoost importance without retraining on evaluation data."""
 import hashlib
+from .factor_definitions import definition_for
 
 
 def xgboost_importance(model, **metadata):
@@ -18,6 +19,7 @@ def xgboost_importance(model, **metadata):
         gain = float(gains.get(column, 0.))
         rows.append({
             "factor": column.removeprefix("x_"), "feature": column,
+            **definition_for(column),
             "family": "Qlib Alpha158" if column.startswith("x_q158_") else "WorldQuant 101" if column.startswith("x_wq") else "核心因子",
             "gain": gain, "share": gain / denominator if denominator else 0.,
             "total_gain": float(totals.get(column, 0.)),

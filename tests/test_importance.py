@@ -16,6 +16,7 @@ def test_saved_importance_includes_unused_features_and_reproduces_after_reload(t
     model = XGBRanker(n_estimators=8, max_depth=2, min_child_weight=1, n_jobs=1)
     model.fit(frame, target, group=np.repeat(10, 12))
     artifact = xgboost_importance(model, rows=120, train_end="2026-09-24")
+    assert all("definition" in row and "formula" in row for row in artifact["rows"])
     assert artifact["features"] == 106 and artifact["train_rows"] == 120
     assert abs(sum(row["share"] for row in artifact["rows"]) - 1) < 1e-12
     assert artifact["rows"][0]["factor"] == "wq000"
